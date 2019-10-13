@@ -1,36 +1,25 @@
+####    LIBRARIES   ####
+
+#must execute these lines first
 library(haven)
 library(dplyr)
 library(magrittr)
 library(purrr)
-
-##test edit 10:44am
+library(tidyr)
 
 ####    READ DATA    ####
-data <- read_dta(choose.files())
-setwd(choose.dir())
+data <- read_dta(choose.files())   #select "rvu brief.dta" file containing NSQIP data (this will take a while to import)
+setwd(choose.dir())                #select working directory in which "results" folder will be created
 if(!dir.exists(paste(getwd(),"/results",sep=""))) {
   dir.create(paste(getwd(),"/results",sep=""))
+}
+if(!dir.exists(paste(getwd(),"/trials",sep=""))) {
+  dir.create(paste(getwd(),"/trials",sep=""))
 }
 
 ####    CONSTANTS    ####
 
 ##    RVU GOALS   ##
-
-#source: https://www.beckershospitalreview.com/compensation-issues/2015-physician-compensation-work-rvu-by-specialty.html
-
-# RVU_goal.cardiac <- 10072
-# RVU_goal.general <- 6736
-# RVU_goal.obgyn <- 6853
-# RVU_goal.urology <- 7649
-# RVU_goal.otolaryng <- 6903
-# 
-# RVU_goal.thoracic <- 10000
-# RVU_goal.neuro <- 10000
-# RVU_goal.ortho <- 10000
-# RVU_goal.plastics <- 10000
-# RVU_goal.vascular <- 10000
-# 
-# RVU_goal.ir <- 10000
 
 RVU_Goal <- 5000
 
@@ -56,22 +45,6 @@ urology <- "Urology"
 vascular <- "Vascular"
 
 ##  RVU GOAL - SPECIALTY TABLE  ##
-
-# rvu_goal.byspecialty <-
-#   tribble(
-#     ~specialty, ~rvu_goal,
-#     cardiac, RVU_goal.cardiac,
-#     general, RVU_goal.general,
-#     gyne, RVU_goal.obgyn,
-#     ir, RVU_goal.ir,
-#     neuro, RVU_goal.neuro,
-#     ortho, RVU_goal.ortho,
-#     ent, RVU_goal.otolaryng,
-#     plastics, RVU_goal.plastics,
-#     thoracic, RVU_goal.thoracic,
-#     urology, RVU_goal.urology,
-#     vascular, RVU_goal.vascular
-#   )
 
 rvu_goal.byspecialty <-
   tribble(
@@ -104,6 +77,12 @@ TURNOVER_TIME = #46, the median difference between anesthesia time and surgery t
       data[!is.na(data$anetime) & !is.na(data$optime) & data$anetime > 0,]$optime
   );
 
+##  SIM OPTIONS ##
+
+GEN_TRIALS <- TRUE    #generate new data (as opposed to reading saved data)
+SAVE_TRIALS <- TRUE   #write data from each trial (will overwrite existing trial data files)
+
+
 ####    SUBR: ASSIGN TERTILES    ####
 assign.tertiles <- function(cases) {
   cases %<>%
@@ -116,22 +95,7 @@ assign.tertiles <- function(cases) {
 ####    SUBR: SINGLE SIMIULATION    ####
 sim <- function(cases, rvu_goal, iterations, surgspec, schedule, speed, has_turnover_time) {
   
-  days.results <- c()             #total work days to reach RVU target
-  time.or.q24.results <- c()      #mean hours spent in OR each day (per trial)
-  time.or.q24 <- c()              #total hrs spent in OR each day
-  
-  time.or.alldays <- rep(NA,150*iterations)        #time spent in OR everyday, for calculating SD of daily OR time
-  
-  trial <- 1        #nth trial out of 'iterations' trials
-  time.max <- BLOCK.MINS   #minutes
-  ctr <- 1          #index for time.or.alldays (never resets)
-  
   ## setup for various simulation modes
-  #filter by surgeon speed
-  
-  if(speed > 0){
-    cases %<>% filter(tertile == speed)
-  }
   
   #add turnover time or not
   if(has_turnover_time) {
@@ -141,54 +105,103 @@ sim <- function(cases, rvu_goal, iterations, surgspec, schedule, speed, has_turn
     turnover_time = 0;
   }
   
-  #condition for ending each OR day varies by schedule
-  if(schedule == Sched.NEVER_OVER){
-    meets.condition <- function(){
-      return(time.or + cases$optime[case.index] > time.max)
-    }
-  } else if(schedule ==  Sched.ALWAYS_OVER) {
-    meets.condition <- function(){
-      return(time.or > time.max)
-    }
-  } else if(schedule == Sched.SOFTCAP) {
-    meets.condition <- function(){
-      return(time.or > SOFTCAP.MINS)
-    }
-  } else {
-    meets.condition <- function(){
-      stop("Scheduling condition is not properly specified")
-    }
-  }
-  
-  while(trial <= iterations){
+  #only generate new trial data if global env variable GEN_TRIALS = TRUE
+  if(GEN_TRIALS){
+
+    trial <- 1                #nth trial out of 'iterations' trials
+    time.max <- BLOCK.MINS    #minutes
+    ctr <- 1                  #index for time.or.allblocks (never resets)    
     
-    days <- 1
-    time.or <- 0
-    rvus <- 0
-    while(rvus < rvu_goal) {
-      
-      case.index <- runif(1,1,dim(cases)[1])
-      if(meets.condition()) {
-        days <- days+1
-        time.or.alldays[ctr] <- time.or/60
-        ctr <- ctr + 1
-        time.or <- 0
+    trials.data <- as.data.frame(matrix(NA, nrow = 150*iterations, ncol = 3))   #initialize table that will record every block utilization in every trial. 150*iterations is a guesstimate of table size
+    names(trials.data) <- c("trial","block","time.or")                          #set appropriate column names
+    
+    #filter by surgeon speed
+    if(speed > 0){
+      cases %<>% filter(tertile == speed)
+    }
+    
+    #condition for ending each OR block varies by schedule
+    if(schedule == Sched.NEVER_OVER){
+      meets.condition <- function(){
+        return(time.or + cases$optime[case.index] > time.max)
       }
-      time.or <- time.or + cases$optime[case.index] + turnover_time
-      rvus <- rvus + cases$totrvu[case.index]
+    }
+    else if(schedule ==  Sched.ALWAYS_OVER) {
+      meets.condition <- function(){
+        return(time.or > time.max)
+      }
+    }
+    else if(schedule == Sched.SOFTCAP) {
+      meets.condition <- function(){
+        return(time.or > SOFTCAP.MINS)
+      }
+    }
+    else {
+      meets.condition <- function(){
+        stop("Scheduling condition is not properly specified")
+      }
     }
     
-    days.results[[trial]] <- days
-    trial <- trial+1
+    while(trial <= iterations){
+      
+      blocks <- 1
+      time.or <- 0
+      rvus <- 0
+      while(rvus < rvu_goal) {
+        
+        case.index <- runif(1,1,dim(cases)[1])
+        if(meets.condition()) {
+          trials.data[ctr,] <- c(trial,blocks,time.or)
+          blocks <- blocks+1
+          ctr <- ctr + 1
+          time.or <- 0
+        }
+        time.or <- time.or + cases$optime[case.index] + turnover_time
+        rvus <- rvus + cases$totrvu[case.index]
+      }
+      
+      trial <- trial+1
+      
+    }
+    
+    trials.data %<>% drop_na()  #remove empty rows created during initialization of dataframe
+    
+  }
+  else {  #GEN_TRIALS == FALSE, so read from file. Will throw error if file doesn't exist
+    
+    trials.data <- read.csv(file = paste(getwd(),
+                                         "/trials/trials_",surgspec,
+                                         "_RVUs-",rvu_goal,
+                                         "_sched-",schedule,
+                                         "_blocksize-",BLOCK.MINS/60,
+                                         "_speed-",speed,
+                                         "_turnover-",turnover_time,
+                                         ".csv",sep = ""),
+                            header = TRUE)
     
   }
   
-  time.or.alldays %<>% na.omit()
+  if(SAVE_TRIALS && GEN_TRIALS){  #only need to save data if it was just generated ;)
+    write.csv(trials.data,file = paste(getwd(),
+                                       "/trials/trials_",surgspec,
+                                       "_RVUs-",rvu_goal,
+                                       "_sched-",schedule,
+                                       "_blocksize-",BLOCK.MINS/60,
+                                       "_speed-",speed,
+                                       "_turnover-",turnover_time,
+                                       ".csv",sep = ""),
+              row.names = FALSE)
+  }
   
+  ##  ANALSYIS OF TRIALS.DATA
+  trials.data %<>% group_by(trial)
+  sumstats <- trials.data %>%
+    summarise(blocks = max(block), time.or = mean(time.or))
+
   return(
     tribble(
-      ~specialty, ~scheduling, ~speed, ~days.mean, ~days.sd, ~hrs.mean, ~hrs.sd, ~turnover.time,
-      surgspec, schedule, speed, mean(days.results), sd(days.results), mean(time.or.alldays), sd(time.or.alldays), turnover_time
+      ~specialty, ~scheduling, ~speed, ~block.size, ~rvu.goal, ~blocks.mean, ~blocks.sd, ~time.or.mean, ~time.or.sd, ~turnover.time,
+      surgspec, schedule, speed, BLOCK.MINS, rvu_goal, mean(sumstats$blocks), sd(sumstats$blocks), mean(trials.data$time.or), sd(trials.data$time.or), turnover_time
     )
   )
   
@@ -259,19 +272,21 @@ sim.all <- function(cases,iterations) {
 
 ####    SUBR: META-AGGREGATE SIMULATION   ####
 
-## vary block size, RVU targets
-
-rvu_goal.x <- 5000
-block_sizes <- c(3,4,6,8)#hours
-n.surgeons <- 10000
-
-while(rvu_goal.x <= 12000){
-  for(size.block in block_sizes){
-    BLOCK.MINS <- size.block*60 #convert hours to mins
-    results <- sim.all(data,n.surgeons)
-    write.csv(results, file = paste(getwd(),"/results/results_blocksize",size.block,"hrs_RVUtarget",rvu_goal.x,".csv",sep=""),row.names = F)
+sim.run <- function() {
+  ## vary block size, RVU targets
+  
+  rvu_goal.x <- 5000
+  block_sizes <- c(3,4,6,8)#hours
+  n.surgeons <- 10000
+  
+  while(rvu_goal.x <= 12000){
+    for(size.block in block_sizes){
+      BLOCK.MINS <- size.block*60 #convert hours to mins
+      results <- sim.all(data,n.surgeons)
+      write.csv(results, file = paste(getwd(),"/results/results_blocksize",size.block,"hrs_RVUtarget",rvu_goal.x,"_",".csv",sep=""),row.names = F)
+    }
+    rvu_goal.x <- rvu_goal.x + 500
   }
-  rvu_goal.x <- rvu_goal.x + 500
 }
 
 ####    PRELIM DATA CLEANING   ####
@@ -307,4 +322,11 @@ results <- sim.all(data,1000)
 write.csv(results, file = paste(getwd(),"/results/results_aggregate_",Sys.Date(),".csv",sep=""),row.names = F)
 
 ####    PLOT RESULTS    ####
-results %>% barplot.default(results[results]$days.mean,names.arg = paste(results$specialty,results$speed))
+#barplot.default(results[results]$blocks.mean,names.arg = paste(results$specialty,results$speed))
+
+####    SANDBOX     ####
+#use this space only for testing/debugging, will be deleted in final version
+
+GEN_TRIALS <- TRUE
+SAVE_TRIALS <- TRUE
+sim(data,10000,100,cardiac,Sched.NEVER_OVER,Speed.ALL,FALSE)
