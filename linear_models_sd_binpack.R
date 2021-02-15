@@ -448,7 +448,7 @@ row.prepare.sd <- function(.specialty, .cluster_size, .casemix,
   ot.actual.sd <- .subset %>%
     coeff.table(ot.actual.net.sd, .regress_by_rvu = TRUE)
   timeor.sd.tbl <- .subset %>%
-    coeff.table(time.actual.sd, .regress_by_rvu = TRUE)
+    coeff.table(time.or.net.sd, .regress_by_rvu = TRUE)
   rvusperblock.sd.tbl <- .subset %>%
     coeff.table(rvus.perblock.sd, .regress_by_rvu = FALSE)
   rateotactual.sd.tbl <- .subset %>%
