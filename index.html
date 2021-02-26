@@ -1,0 +1,444 @@
+<html>
+    <head>
+        <title>RVU Target Calculator - University of Chicago Surgery</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" /> 
+
+        
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css">
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>
+
+
+        <!--<link rel="stylesheet" href="rvu_style.css">-->
+        
+        <!--<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>-->
+        
+        <script type="text/javascript">
+            
+            (function() {
+                var activeOpenedModalId     = null;
+                var isHidingModalByPopState = false;
+                $(document).on('show.bs.modal', '.modal', function() {
+                    activeOpenedModalId  = $(this).attr('id');
+                    window.location.hash = activeOpenedModalId;
+                }).on('hide.bs.modal', '.modal', function() {
+                    if(!isHidingModalByPopState) {
+                        window.history.back();
+                    }
+                    isHidingModalByPopState = false;
+                    activeOpenedModalId     = null;
+                });
+                $(window).on('popstate', function() {
+                    if(activeOpenedModalId && window.location.hash !== '#'+activeOpenedModalId) {
+                        isHidingModalByPopState = true;
+                        $("#" + activeOpenedModalId).modal('hide');
+                    }
+                });
+            })();
+            
+            // calculate prediction
+            function innerCalculate(data, rvus, blocksize, turnover) {
+                console.log("inside inner");
+                console.log(data);
+                //console.log(JSON.stringify(data));
+                var objret = $.grep(data, function (n, i) {
+                    return n.surgspec == specialty &&
+                        n.cluster_size == cluster_size &&
+                        n.casemix == casemix;
+                });
+                console.log('filtered')
+                console.log(JSON.stringify(objret))
+
+                var rvu_coeff = objret[0]["coeff.rvu_target"];
+                var block_coeff = objret[0]["coeff.block_hours"];
+                var turnover_coeff = objret[0]["coeff.turnover_time"];
+                var intercept = objret[0]["intercept"];
+
+                var block_exp;
+                var turnover_exp;
+                
+                console.log('About to switch');
+
+                switch(objret[0]["invert.block_hours"]) {
+                    case "TRUE":
+                        block_exp = -1;
+                        break;
+                    case "FALSE":
+                        block_exp = 1;
+                        break;
+                    default:
+                        console.log("ERR invert block hours");
+                        throw new Error("invalid blocksize boolean");
+                }
+
+                switch(objret[0]["invert.turnover_time"]) {
+                    case "TRUE":
+                        turnover_exp = -1;
+                        break;
+                    case "FALSE":
+                        turnover_exp = 1;
+                        break;
+                    default:
+                        console.log("ERR invert turnover time");
+                        throw new Error("invalid turnover boolean");
+                }
+                
+                console.log('about to calc');
+                var estimate = rvu_coeff*rvus + block_coeff*(blocksize**block_exp) + turnover_coeff*(turnover**turnover_exp) + intercept;
+                
+                if(metric == "blockreqs" || metric == "n_cases") {
+                    //estimate = Math.ceil(estimate);
+                    estimate = estimate.toFixed(1);
+                }
+                else{
+                    estimate = estimate.toFixed(2);
+                }
+                var R2 = objret[0]["rsquared.adjust"].toFixed(4);
+                
+                console.log(estimate)
+                console.log({"est":estimate, "R2":R2});
+                console.log(estimate+1)
+                
+                return {"est":estimate, "R2":R2};
+            }
+            
+            // display prediction
+            function calculate()
+            {                
+                metric = document.getElementById("metric").value;
+                specialty = document.getElementById("specialty").value;
+                casemix = document.getElementById("casemix").value;
+                cluster_size = document.getElementById("cluster").value;
+                rvus = document.getElementById("rvu_target").value;
+                blocksize = document.getElementById("block_hours").value;
+                turnover = document.getElementById("turnover_time").value;
+                
+                rvus = Number(rvus);
+                blocksize = Number(blocksize);
+                turnover = Number(turnover);
+                
+                console.log(rvus + ", "+blocksize+", "+turnover);
+                
+                if(rvus <= 0) {
+                    alert("The specified RVU Target is invalid.");
+                    return;
+                }
+                else if(blocksize <= 0) {
+                    alert("The specified Block Size is invalid.");
+                    return;
+                }
+                else if(turnover <= 0) {
+                    alert("The specified Turnover Time is invalid.");
+                    return;
+                }
+                
+                document.getElementById("result").innerHTML = "";
+                
+                //select appropriate linear model table based on specified metric
+                var lm_mean_json_path;
+                var lm_sd_json_path;
+                var units;
+                var lower_turnover = 0;
+                
+                switch(metric) {
+                    case "blockreqs":
+                        lm_mean_json_path = "lm_blockreq_mean.json";
+                        lm_sd_json_path = "lm_blockreq_sd.json";
+                        units = "blocks"
+                        break;
+                    case "n_cases":
+                        lm_mean_json_path = "lm_ncase_mean.json";
+                        lm_sd_json_path = "lm_ncase_sd.json";
+                        units = "cases"
+                        break;
+                    case "timeor":
+                        lm_mean_json_path = "lm_timeor_mean.json";
+                        lm_sd_json_path = "lm_timeor_sd.json";
+                        units = "hours"
+                        break;
+                    case "optime":
+                        lm_mean_json_path = "lm_optime_mean.json";
+                        lm_sd_json_path = "lm_optime_sd.json";
+                        units = "hours"
+                        break;
+                    case "turnover_net":
+                        lm_mean_json_path = "lm_turnover_mean.json";
+                        lm_sd_json_path = "lm_turnover_sd.json";
+                        units = "hours"
+                        break;
+                    case "hrvu_util":
+                        lm_mean_json_path = "lm_hrvu_util_mean.json";
+                        lm_sd_json_path = "lm_hrvu_util_sd.json";
+                        units = "RVUs/hour"
+                        lower_turnover = 10;
+                        break;
+                    case "hrvu_admin":
+                        lm_mean_json_path = "lm_hrvu_admin_mean.json";
+                        lm_sd_json_path = "lm_hrvu_admin_sd.json";
+                        units = "RVUs/hour"
+                        lower_turnover = 10;
+                        break;
+                }
+                
+                // calculate mean and report adj R^2
+                fetch("json/"+lm_mean_json_path, {
+                    credentials: 'same-origin'
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                          throw new Error('Network response was not ok');
+                        }
+                        return response.json();
+                    })
+                    .catch(error => {
+                        console.error('There has been a problem with your fetch operation:', error);
+                    })
+                    .then(data => {                        
+                        
+                        var mean = innerCalculate(data, rvus, blocksize, turnover);
+                        mean.est = Math.max(0,mean.est)
+                    
+                        if(metric == "turnover_net" || metric == "timeor") {
+                            mean.est = (mean.est/60).toFixed(2);
+                        }
+                        
+                        document.getElementById("result").innerHTML += "<br><b>Estimated Mean:</b> "+mean.est+" "+units+"<br><b>Adjusted R<sup>2</sup>:</b> "+mean.R2;
+
+                    });
+                
+                // calculate standard deviation and report adj R^2
+                fetch("json/"+lm_sd_json_path, {
+                    credentials: 'same-origin'
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                          throw new Error('Network response was not ok');
+                        }
+                        return response.json();
+                    })
+                    .catch(error => {
+                        console.error('There has been a problem with your fetch operation:', error);
+                    })
+                    .then(data => {
+                        
+                        var sd = innerCalculate(data, rvus, blocksize, turnover);
+                        sd.est = Math.max(0,sd.est)
+                        
+                        if(metric == "optime" || metric == "turnover_net" || metric == "timeor") {
+                            sd.est = (sd.est/60).toFixed(2);
+                        }
+                        
+                        document.getElementById("result").innerHTML += "<br><br><b>Estimated SD:</b>  "+sd.est+" "+units+"<br><b>Adjusted R<sup>2</sup>:</b> "+sd.R2;
+
+                        document.getElementById("result").innerHTML += "<br><br><p>NB: The above estimates are based on simulated data and validated over the following input ranges:<ul><li>RVU Targets between 3000 and 12000</li><li>Block Sizes between 4 and 12 hours</li><li>Turnover Times between "+lower_turnover+" and 90 minutes</li></ul></p>";
+                    });
+                
+                console.log('done')
+            }
+        </script>
+    </head>
+    
+    <body>
+        <section id="inputs">
+            <div class="container-fluid" style="float: left; width: 100vw">
+                <img style="float: left; max-height: 100%; max-width: 100%" alt="" src="json/UofC_surgery_banner.png" />
+            </div>
+            <div class="container-fluid" style="clear: left">
+                <br>
+                <h1>RVU Target Feasibility Calculator</h1>
+                <label for="metric">Metric of Interest:</label>
+                <select name="metric" id="metric">
+                    <option value="blockreqs">Block Requirement</option>
+                    <option value="n_cases">Number of Cases</option>
+                    <option value="optime">Net Case Time</option>
+                    <option value="turnover_net">Net Turnover Time</option>
+                    <option value="timeor">Net Operating Room Time</option>
+                    <option value="hrvu_util">Hourly RVUs (Surgeon)</option>
+                    <option value="hrvu_admin">Hourly RVUs (Admin)</option>
+                </select> <a href="#metric_modal" data-toggle="modal" data-target="#metric_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <label for="specialty">Specialty:</label>
+                <select name="specialty" id="specialty">
+                    <option value="Cardiac Surgery">Cardiac</option>
+                    <option value="General Surgery">General</option>
+                    <option value="Gynecology">Gynecology</option>
+                    <option value="Neurosurgery">Neurosurgery</option>
+                    <option value="Orthopedics">Orthopedics</option>
+                    <option value="Otolaryngology (ENT)">Otolaryngology</option>
+                    <option value="Plastics">Plastics</option>
+                    <option value="Thoracic">Thoracic</option>
+                    <option value="Urology">Urology</option>
+                    <option value="Vascular">Vascular</option>
+                </select> <a href="#specialty_modal" data-toggle="modal" data-target="#specialty_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <label for="casemix">Case-Mix Complexity:</label>
+                <select name="casemix" id="casemix">
+                    <option value="0">All</option>
+                    <option value="1">Low</option>
+                    <option value="2">Medium</option>
+                    <option value="3">High</option>
+                </select> <a href="#casemix_modal" data-toggle="modal" data-target="#casemix_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <label for="cluster">Scheduling Flexibility:</label>
+                <select name="cluster" id="cluster">
+                    <option value="5">5 cases</option>
+                    <option value="10">10 cases</option>
+                    <option value="20">20 cases</option>
+                    <option value="99999">Annual Benchmark</option>
+                </select> <a href="#cluster_modal" data-toggle="modal" data-target="#cluster_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <label for="rvu_target">RVU Target:</label>
+                <input type="number" id="rvu_target" style="width:5.5em">
+                <a href="#rvu_modal" data-toggle="modal" data-target="#rvu_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <label for="block_hours">Block Size (Hours):</label>
+                <input type="number" id="block_hours" style="width:5.5em">
+                <a href="#blocksize_modal" data-toggle="modal" data-target="#blocksize_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <label for="turnover_time">Turnover Time (Minutes):</label>
+                <input type="number" id="turnover_time" style="width:5.5em">
+                <a href="#turnover_modal" data-toggle="modal" data-target="#turnover_modal"><i class="glyphicon glyphicon-question-sign"></i></a><br>
+                <input type="submit" value="Submit" onclick="calculate()">
+<!--                <input type="button" value="Help" onclick="help(0)"> <br>-->
+            </div>
+        </section> <br>
+        <div id="result" class="container-fluid"></div>
+<!--        <footer>-->
+        <br>
+        <div class="container-fluid">
+            <p>Citation: Rao SA, Deshpande NG, Richardson DW, Brickman J, Posner MC, Matthews JB, Turaga KK. <i>Equity in the Operating Room: Variation in Required Block Time for Reaching RVU Productivity Targets Across Surgical Specialties.</i> Manuscript in Submission; February 2021.</p>
+        </div>
+
+<!--        </footer>-->
+        
+        
+        <!--    MODALS     -->
+        
+<!--        //metric-->
+        <div id="metric_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal">&times;</button>
+                        <h4 class="modal-header">Metric of Interest</h4>
+                    </div>
+                    <div class="modal-body">
+                        <ul><li><b>Block Requirement:</b> number of blocks required to reach the RVU target. Blocks are of the length specified in the Block Size field.</li><li><b>Number of Cases:</b> number of cases required to reach the RVU Target. It is dependent only on the RVU Target.</li><li><b>Net Case Time:</b> total number of hours spent operating, not including turnover time. It is dependent only on the RVU Target.</li><li><b>Net Turnover time:</b> sum of all turnovers.</li><li><b>Net Operating Room Time:</b> inclusive of both case time and turnovers.</li><li><b>Hourly RVUs (Surgeon):</b> total RVUs divided by net operating time. It is dependent only on Block Size and Turnover Time.</li><li><b>Hourly RVUs (Admin):</b> total RVUs divided by the sum of reserved block time and overtime block utilization. It is dependent only on Block Size and Turnover Time.</li></ul>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+<!--        //specialty-->
+        <div id="specialty_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal">&times;</button>
+                        <h4 class="modal-header">Specialty</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>Ten surgical specialties are documented in ACS NSQIP. Subspecialties within these ten are not represented at this time. Interventional Radiology was excluded due to small sample size.</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+<!--        //casemix-->
+        <div id="casemix_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <!--<button type="button" class="close" data-dismiss="modal">&times;</button>-->
+                        <h4 class="modal-header">Case-Mix Complexity</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>Case-Mix complexity refers to the relative difficulty of cases performed by a surgeon.</p><ul><li>Cases were grouped by principal procedure, and each group was split into three evenly sized tertiles (Low, Medium, High) by operating time.</li><li>The distribution of principal procedures is roughly consistent across tertiles.</li><li>RVUs per case increased across tertiles with increasing complexity, even though stratification did not explicitly account for RVUs; this finding lends credence to the heuristic as a rough measure of complexity.</li><li>A fourth category (All) includes all case complexities together.</li></ul>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+<!--        //cluster-->
+        <div id="cluster_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal">&times;</button>
+                        <h4 class="modal-header">Scheduling Flexibility</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>Cases are scheduled in concert with other cases which present around the same time. The number of cases that present and are scheduled at the same time determines the scheduling flexibility.</p> <ul><li>Increased flexibility to schedule cases is associated with improved efficiency of block utilization.</li><li>An annual benchmark is included to reference characteristics of the theoretical optimum schedule, which is possible when an annual caseload is scheduled at once with unlimited scheduling flexibility.</li></ul>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+<!--        //rvu_target-->
+        <div id="rvu_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal">&times;</button>
+                        <h4 class="modal-header">RVU Target</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>The number of RVUs to be attained. The model is validated for RVU targets in the range of 3000 to 12000.</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+<!--        //blocksize-->
+        <div id="blocksize_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal">&times;</button>
+                        <h4 class="modal-header">Block Size</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>The length of one day's allocated elective operating time, termed a block.</p><ul><li>The model is validated for block sizes in the range of 4 to 12 hours.</li><li>Notably, cases are not scheduled to exceed block length unless a single case is longer than the block.</li><li>Hence, longer blocks permit better block utilization than two blocks of half length, and the two scenarios are not equivalent despite having equal reserved block time (e.g., an 8 hour block allows for better block utilization than two 4 hour blocks).</li></ul>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+<!--        //turnover-->
+        <div id="turnover_modal" class="modal fade" role="dialog">
+            <div class="modal-dialog">
+                <!-- Modal content-->
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <button type="button" class="close" data-dismiss="modal">&times;</button>
+                        <h4 class="modal-header">Turnover Time</h4>
+                    </div>
+                    <div class="modal-body">
+                        <p>Time between skin closure at the end of one case and skin incision at the start of the next case. This time accounts for anesthetic emergence and induction as well as other activities such as OR cleaning and patient transport.</p><ul><li>The model is validated for turnover times in the range of 0 to 90 minutes for most metrics except those pertaining to hourly RVUs, in which case the validated lower bound is 10 minutes.</li></ul>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>
