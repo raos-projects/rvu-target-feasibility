@@ -1,4 +1,4 @@
-# nsqip-analysis
+# rvu-target-feasibility
 Clean, filter, and simulate OR usage for surgeons in varying specialties and practice environments based on cases in the ACS NSQIP dataset. Shared in advance of expected publication of Rao et al. (2021).
 
 Project workflow:
